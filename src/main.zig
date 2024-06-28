@@ -1,5 +1,18 @@
 const std = @import("std");
 
+// player(?i2): connect of -1 or 1
+// start of connect path(?u7): the shift amount to get to that position
+// direction(?u7): shift amount to get to the next peice on path
+// length of path: amount of shifts until shifts are no longer on the path
+// index:(?u7) of last peice in connect
+const Connect_Data = struct {
+    player: i2,
+    start: u7,
+    dir: u7,
+    len: u7,
+    idx: u7,
+};
+
 const Board = struct {
     // Stores Data of the board as a u84 where every 2 bits repersents an i2
     // b00 -> 0 ->  Empty
@@ -17,64 +30,39 @@ const Board = struct {
     // sets the data of an i2 in the proper col pushing it to the first zero
     // throws error if attempting to push to position that is already set or full column
     pub fn set(self: *Board, col: u7, player: i2) !void {
-        if (col >= 7) {
-            return error.OutOfBounds;
-        }
+        if (col >= 7) return error.OutOfBounds;
 
-        var col_bits: u84 = 0xFFF;
-        col_bits <<= 12 * col;
-        col_bits &= self.*.data;
-        col_bits >>= 12 * col;
+        const col_bits = (self.data >> (12 * col)) & 0xFFF;
+        const bit2: u84 = 0b11;
         var row: u7 = 0;
-
-        while (col_bits != 0) {
-            col_bits >>= 2;
-            row += 1;
-            if (row > 6) {
-                return error.ColumnFull;
-            }
-        }
-
-        const check = try self.get(col, row);
-        if (check != 0) {
-            return error.ValueAlreadyExists;
+        while ((col_bits & (bit2 << (2 * row))) != 0) : (row += 1) {
+            if (row > 5) return error.ColumnFull;
         }
 
         const uplayer: u2 = @bitCast(player);
-        var setter: u84 = @intCast(uplayer);
-        setter <<= 12 * col + 2 * row;
-
-        self.*.data |= setter;
+        const setter: u84 = @intCast(uplayer);
+        self.*.data |= setter << 12 * col + 2 * row;
     }
 
     // gets data at some col and row
     // errors if col or row are out of bounds
     pub fn get(self: Board, col: u7, row: u7) !i2 {
-        if ((col >= 7) or (row >= 6)) {
-            std.debug.print("\nERROR: (col,row) = ({},{})\n", .{ col, row });
-            // self.display_board();
-            return error.OutOfBounds;
-        }
-        const bits: u84 = self.data >> (col * 12 + row * 2);
-        const bit2: u2 = @intCast(bits & 0b11);
+        if ((col >= 7) or (row >= 6)) return error.OutOfBounds;
+        const bit2: u2 = @intCast((self.data >> (col * 12 + row * 2)) & 0b11);
         const val: i2 = @bitCast(bit2);
         return val;
     }
 
-    // finds a connect of pieces of sz length
-    // returns the (player, start of connect path, direction, length of path) or all null values if connect was not found
-    // player(?i2): connect of -1 or 1
-    // start of connect path(?u7): the shift amount to get to that position
-    // direction(?u7): shift amount to get to the next peice on path
-    // length of path: amount of shifts until shifts are no longer on the path
-    pub fn connect(self: Board, sz: usize) struct { ?i2, ?u7, ?u7, ?u7 } {
+    // finds all connects of a specific size and returns all the info of all the connects
+    pub fn all_connects(self: Board, a: std.mem.Allocator, sz: usize) !std.ArrayList(Connect_Data) {
+        var connects = std.ArrayList(Connect_Data).init(a);
         //check columns
         var col_idx: u7 = 0;
         while (col_idx < 7) {
             var col_data: u84 = self.data >> col_idx * 12;
             var cnt: u8 = 0;
             var crnt_2bit: u84 = 0;
-            for (0..6) |_| {
+            for (0..6) |i| {
                 const bit2 = col_data & 0b11;
                 if (bit2 == 0) {
                     break;
@@ -90,7 +78,14 @@ const Board = struct {
                 if (cnt >= sz) {
                     const ubit2: u2 = @intCast(bit2);
                     const player: i2 = @bitCast(ubit2);
-                    return .{ player, col_idx * 12, 2, 6 };
+                    const idx: u7 = @intCast(i);
+                    const con_data = Connect_Data{ 
+                        .player = player, .start = col_idx * 12, 
+                        .dir = 2, 
+                        .len = 6, 
+                        .idx = idx };
+                    try connects.append(con_data);
+                    break;
                 }
 
                 col_data >>= 2;
@@ -104,7 +99,7 @@ const Board = struct {
             var row_data: u84 = self.data >> row_idx * 2;
             var cnt: u8 = 0;
             var crnt_2bit: u84 = 0;
-            for (0..7) |_| {
+            for (0..7) |i| {
                 const bit2 = row_data & 0b11;
                 if (bit2 == 0) {
                     cnt = 0;
@@ -123,7 +118,15 @@ const Board = struct {
                 if (cnt >= sz) {
                     const ubit2: u2 = @intCast(bit2);
                     const player: i2 = @bitCast(ubit2);
-                    return .{ player, row_idx * 2, 12, 7 };
+                    const idx: u7 = @intCast(i);
+                    const con_data = Connect_Data{ 
+                        .player = player, 
+                        .start = row_idx * 2, 
+                        .dir = 12, 
+                        .len = 7, 
+                        .idx = idx };
+                    try connects.append(con_data);
+                    break;
                 }
 
                 row_data >>= 12;
@@ -139,7 +142,7 @@ const Board = struct {
             var diag_bits = self.data >> 2 * l_diag_idx_1;
             var cnt: u8 = 0;
             var crnt_2bit: u84 = 0;
-            for (0..(6 - l_diag_idx_1)) |_| {
+            for (0..(6 - l_diag_idx_1)) |i| {
                 const bit2 = diag_bits & 0b11;
 
                 if (bit2 == 0) {
@@ -159,7 +162,15 @@ const Board = struct {
                 if (cnt >= sz) {
                     const ubit2: u2 = @intCast(bit2);
                     const player: i2 = @bitCast(ubit2);
-                    return .{ player, 2 * l_diag_idx_1, 14, 6 - l_diag_idx_1 };
+                    const idx: u7 = @intCast(i);
+                    const con_data =  Connect_Data{ 
+                        .player = player, 
+                        .start = 2 * l_diag_idx_1, 
+                        .dir = 14, 
+                        .len = 6 - l_diag_idx_1, 
+                        .idx = idx };
+                    try connects.append(con_data);
+                    break;
                 }
 
                 diag_bits >>= 14;
@@ -175,7 +186,7 @@ const Board = struct {
             var diag_bits = self.data >> 12 * l_diag_idx_2;
             var cnt: u8 = 0;
             var crnt_2bit: u84 = 0;
-            for (0..(7 - l_diag_idx_2)) |_| {
+            for (0..(7 - l_diag_idx_2)) |i| {
                 const bit2 = diag_bits & 0b11;
 
                 if (bit2 == 0) {
@@ -195,7 +206,15 @@ const Board = struct {
                 if (cnt >= sz) {
                     const ubit2: u2 = @intCast(bit2);
                     const player: i2 = @bitCast(ubit2);
-                    return .{ player, 12 * l_diag_idx_2, 14, 7 - l_diag_idx_2 };
+                    const idx: u7 = @intCast(i);
+                    const con_data = Connect_Data{ 
+                        .player = player, 
+                        .start = 12 * l_diag_idx_2, 
+                        .dir = 14, 
+                        .len = 7 - l_diag_idx_2, 
+                        .idx = idx };
+                    try connects.append(con_data);
+                    break;
                 }
 
                 diag_bits >>= 14;
@@ -211,7 +230,7 @@ const Board = struct {
             var diag_bits = self.data >> 2 * h_diag_idx_1;
             var cnt: u8 = 0;
             var crnt_2bit: u84 = 0;
-            for (0..(h_diag_idx_1 + 1)) |_| {
+            for (0..(h_diag_idx_1 + 1)) |i| {
                 const bit2 = diag_bits & 0b11;
 
                 if (bit2 == 0) {
@@ -231,7 +250,15 @@ const Board = struct {
                 if (cnt >= sz) {
                     const ubit2: u2 = @intCast(bit2);
                     const player: i2 = @bitCast(ubit2);
-                    return .{ player, 2 * h_diag_idx_1, 10, h_diag_idx_1 + 1 };
+                    const idx: u7 = @intCast(i);
+                    const con_data = Connect_Data{ 
+                        .player = player, 
+                        .start = 2 * h_diag_idx_1, 
+                        .dir = 10, 
+                        .len = h_diag_idx_1 + 1, 
+                        .idx = idx };
+                    try connects.append(con_data);
+                    break;
                 }
 
                 diag_bits >>= 10;
@@ -247,7 +274,7 @@ const Board = struct {
             var diag_bits = self.data >> 12 * h_diag_idx_1 + 10;
             var cnt: u8 = 0;
             var crnt_2bit: u84 = 0;
-            for (0..(7 - h_diag_idx_2)) |_| {
+            for (0..(7 - h_diag_idx_2)) |i| {
                 const bit2 = diag_bits & 0b11;
 
                 if (bit2 == 0) {
@@ -267,7 +294,15 @@ const Board = struct {
                 if (cnt >= sz) {
                     const ubit2: u2 = @intCast(bit2);
                     const player: i2 = @bitCast(ubit2);
-                    return .{ player, 12 * h_diag_idx_1 + 10, 10, 7 - h_diag_idx_2 };
+                    const idx: u7 = @intCast(i);
+                    const con_data = Connect_Data{ 
+                        .player = player, 
+                        .start = 12 * h_diag_idx_1 + 10,
+                        .dir =  10, 
+                        .len = 7 - h_diag_idx_2,
+                        .idx = idx };
+                    try connects.append(con_data);
+                    break;
                 }
 
                 diag_bits >>= 10;
@@ -276,163 +311,100 @@ const Board = struct {
             h_diag_idx_2 += 1;
         }
 
-        return .{ null, null, null, null };
+        return connects;
     }
 
-    // this algorithm checks to see if there is a move that can be done that stops human(1 peices) from winning in the next turn
-    // It returns the two possible moves that may do this it returns null for either of the columns if a move there wont stop it
-    // It returns null if there is no posibility to win on next turn
-    //
-    // It checks the column by finding the position before and after 3 ones in a row and then checks if the position below is
-    // filled and that position is not filled it then returns the two columns if they are not the same column
-    // (case where 3 in a row happen in a column) else it return one and the other as null
-    pub fn stop_win(self: Board) !struct { ?u7, ?u7 } {
-        const player, const start, const dir, const len = connect(self, 3);
-        if (player == null) {
-            return .{ null, null };
-        } else if (player == -1) {
-            return .{ null, null };
-        } else {
-            // std.debug.print("player: {}, start: {}, dir: {}, len: {}", .{player.?, start.?, dir.?, len.?});
-            var cnt: usize = 0;
-            var bits = self.data >> start.?;
-            var idx: u7 = 0;
-            while (idx < len.?) {
-                const bit2 = bits & 0b11;
-                if (bit2 == 1) {
-                    cnt += 1;
-                }
+    // finds all columns that stop win in next move for human
+    pub fn stop_wins(self: Board, connects: std.ArrayList(Connect_Data)) !?[7]bool {
+        var cols = std.mem.zeroes([7]bool);
+        var state = false;
+        for (connects.items) |cd|{
+            if (cd.player == -1) break;
 
-                if (cnt >= 3) {
-                    break;
-                }
-
-                bits >>= dir.?;
-                idx += 1;
-            }
-
-            var first_col: ?u7 = null;
-            if (idx >= 3) {
-                var col = start.? / 12;
-                var row = (start.? % 12) / 2;
-                col += (dir.? * (idx - 3)) / 12;
-                row += ((dir.? * (idx - 3)) % 12) / 2;
-
-                var val1: i2 = undefined;
-                if (row <= 0) {
-                    val1 = 1;
-                } else {
-                    val1 = try self.get(col, row - 1);
-                }
-                const val2 = try self.get(col, row);
-
+            if (cd.idx >= 3) {
+                const col = (cd.start + cd.dir * (cd.idx - 3)) / 12;
+                const row = ((cd.start + cd.dir * (cd.idx - 3)) % 12) / 2;
+                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
+                const val2: i2 = try self.get(col, row);
                 if ((val1 != 0) and (val2 == 0)) {
-                    first_col = col;
+                    state = true;
+                    cols[col] = true;
                 }
             }
 
-            var second_col: ?u7 = null;
-            if ((idx + 1) < len.?) {
-                var col = start.? / 12;
-                var row = (start.? % 12) / 2;
-                col += (dir.? * (idx + 1)) / 12;
-                row += ((dir.? * (idx + 1)) % 12) / 2;
-
-                var val1: i2 = undefined;
-                if (row <= 0) {
-                    val1 = 1;
-                } else {
-                    val1 = try self.get(col, row - 1);
-                }
-                const val2 = try self.get(col, row);
-
+            if ((cd.idx + 1) < cd.len) {
+                const col = (cd.start + cd.dir * (cd.idx + 1)) / 12;
+                const row = ((cd.start + cd.dir * (cd.idx + 1)) % 12) / 2;
+                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
+                const val2: i2 = try self.get(col, row);
                 if ((val1 != 0) and (val2 == 0)) {
-                    second_col = col;
+                    state = true;
+                    cols[col] = true;
                 }
-            }
-
-            if (first_col == second_col) {
-                return .{ first_col, null };
-            } else {
-                return .{ first_col, second_col };
             }
         }
+
+        if (state) return cols else return null;
     }
 
-    pub fn find_win(self: Board) !?u7 {
-        const player, const start, const dir, const len = connect(self, 3);
-        if (player == null) {
-            return null;
-        } else if (player == 1) {
-            return null;
-        } else {
-            var cnt: usize = 0;
-            var bits = self.data >> start.?;
-            var idx: u7 = 0;
-            while (idx < len.?) {
-                const bit2 = bits & 0b11;
-                if (bit2 == 3) {
-                    cnt += 1;
-                }
+    // finds the first column that making a move at would result in a win and null if there is no such column
+    pub fn find_win(self: Board, connects: std.ArrayList(Connect_Data), player: i2) !?u7 {
+        for (connects.items) |cd|{
+            if (cd.player != player) continue;
 
-                if (cnt >= 3) {
-                    break;
-                }
-
-                bits >>= dir.?;
-                idx += 1;
-            }
-
-            if (idx >= 3) {
-                var col = start.? / 12;
-                var row = start.? % 12;
-                col += (dir.? * (idx - 3)) / 12;
-                row += (dir.? * (idx - 3)) % 12;
-
-                var val1: i2 = undefined;
-                if (row <= 0) {
-                    val1 = 1;
-                } else {
-                    val1 = try self.get(col, row - 1);
-                }
-                const val2 = try self.get(col, row);
-
+            if (cd.idx >= 3) {
+                const col = (cd.start + cd.dir * (cd.idx - 3)) / 12;
+                const row = ((cd.start + cd.dir * (cd.idx - 3)) % 12) / 2;
+                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
+                const val2: i2 = try self.get(col, row);
                 if ((val1 != 0) and (val2 == 0)) {
                     return col;
                 }
             }
 
-            if ((idx + 1) < len.?) {
-                var col = start.? / 12;
-                var row = (start.? % 12) / 2;
-                col += (dir.? * (idx + 1)) / 12;
-                row += ((dir.? * (idx + 1)) % 12) / 2;
-
-                var val1: i2 = undefined;
-                if (row <= 0) {
-                    val1 = 1;
-                } else {
-                    val1 = try self.get(col, row - 1);
-                }
-                const val2 = try self.get(col, row);
-
+            if ((cd.idx + 1) < cd.len) {
+                const col = (cd.start + cd.dir * (cd.idx + 1)) / 12;
+                const row = ((cd.start + cd.dir * (cd.idx + 1)) % 12) / 2;
+                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
+                const val2: i2 = try self.get(col, row);
                 if ((val1 != 0) and (val2 == 0)) {
                     return col;
                 }
             }
-
-            return null;
         }
+
+        return null;
     }
 
-    //checks if the board has a winner
-    pub fn is_win(self: Board) bool {
-        const out = connect(self, 4);
-        if (out[0] == null) {
-            return false;
-        } else {
-            return true;
+    // finds all columns that result in a win
+    pub fn find_all_wins(self: Board, connects: std.ArrayList(Connect_Data), player: i2) ![7]bool {
+        var cols = std.mem.zeroes([7]bool);
+
+        for (connects.items) |cd|{
+            if (cd.player != player) continue;
+
+            if (cd.idx >= 3) {
+                const col = (cd.start + cd.dir * (cd.idx - 3)) / 12;
+                const row = ((cd.start + cd.dir * (cd.idx - 3)) % 12) / 2;
+                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
+                const val2: i2 = try self.get(col, row);
+                if ((val1 != 0) and (val2 == 0)) {
+                    cols[col] = true;
+                }
+            }
+
+            if ((cd.idx + 1) < cd.len) {
+                const col = (cd.start + cd.dir * (cd.idx + 1)) / 12;
+                const row = ((cd.start + cd.dir * (cd.idx + 1)) % 12) / 2;
+                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
+                const val2: i2 = try self.get(col, row);
+                if ((val1 != 0) and (val2 == 0)) {
+                    cols[col] = true;
+                }
+            }
         }
+
+        return cols;
     }
 
     //returns all available columns to make a move
@@ -488,335 +460,206 @@ const Board = struct {
     }
 };
 
-const Node = struct {
-    // holds the board data in a game tree
-    board: Board,
-    children: []*Node,
-    parent: ?*Node,
-
-    pub fn init(board: Board, parent: ?*Node, a: *std.mem.Allocator) !*Node {
-        const out: *Node = try a.create(Node);
-        const children = try a.alloc(*Node, 0);
-        out.* = Node{
-            .board = board,
-            .parent = parent,
-            .children = children,
+pub fn Queue(comptime Child: type) type {
+    return struct {
+        const This = @This();
+        const Node = struct {
+            data: Child,
+            next: ?*Node,
         };
-        return out;
-    }
-};
+        a: *std.mem.Allocator,
+        start: ?*Node,
+        end: ?*Node,
+        len: usize,
 
-const QNode = struct {
-    //holds Nodes that have been added to add children too for BFS construction of tree
-    val: *Node,
-    next: ?*QNode,
-    prev: ?*QNode,
+        pub fn init(a: *std.mem.Allocator) This {
+            return This{
+                .a = a,
+                .start = null,
+                .end = null,
+                .len = 0,
+            };
+        }
 
-    pub fn init(val: *Node, next: ?*QNode, prev: ?*QNode) QNode {
-        return QNode{
-            .val = val,
-            .next = next,
-            .prev = prev,
-        };
-    }
-};
+        pub fn deinit(this: *This) void {
+            var current = this.start;
+            while (current) |node| {
+                const next = node.next;
+                this.a.destroy(node);
+                current = next;
+            }
+            this.start = null;
+            this.end = null;
+            this.len = 0;
+        }
 
-const Q = struct {
-    //Queue data structure
-    front: ?*QNode,
-    back: ?*QNode,
-    len: usize,
+        pub fn in(this: *This, value: Child) !void {
+            const node = try this.a.create(Node);
+            node.* = .{ .data = value, .next = null };
+            if (this.end) |end| end.next = node else this.start = node;
+            this.end = node;
+            this.len += 1;
+        }
+
+        pub fn out(this: *This) !Child {
+            const start = this.start orelse return error.QueueIsEmpty;
+            defer this.a.destroy(start);
+            if (start.next) |next|
+                this.start = next
+            else {
+                this.start = null;
+                this.end = null;
+            }
+            this.len -= 1;
+            return start.data;
+        }
+    };
+}
+
+const GameTree = struct {
+    const Node = struct {
+        baord: Board,
+        parent: ?*Node,
+        children: std.ArrayList(*Node),
+
+        pub fn init(a: *std.mem.Allocator, board: Board, parent: ?*Node) !*Node {
+            const node_ptr = try a.create(Node);
+            node_ptr.* = Node{
+                .baord = board,
+                .parent = parent,
+                .children = std.ArrayList(*Node).init(a.*),
+            };
+            return node_ptr;
+        }
+
+        pub fn deinit(self: *Node, a: *std.mem.Allocator) void {
+            for (self.children.items) |child| {
+                child.deinit(a);
+            }
+            self.children.deinit();
+            a.destroy(self);
+        }
+    };
+
+    root: *Node,
     a: *std.mem.Allocator,
 
-    pub fn init(a: *std.mem.Allocator) Q {
-        return Q{
-            .front = null,
-            .back = null,
-            .len = 0,
+    pub fn init(a: *std.mem.Allocator) !GameTree {
+        return GameTree{
+            .root = try Node.init(a, Board.init(), null),
             .a = a,
         };
     }
 
-    //enqueue algo to put new entries at the back of the queue
-    pub fn in(self: *Q, val: *Node) !void {
-        if (self.*.len == 0) {
-            const elem = try self.a.create(QNode);
-            elem.* = QNode.init(val, null, null);
-
-            self.*.back = elem;
-            self.*.front = elem;
-        } else if (self.*.len == 1) {
-            const elem = try self.a.create(QNode);
-            elem.* = QNode.init(val, self.*.front, null);
-            self.*.back = elem;
-            self.*.front.?.prev = self.*.back;
-        } else {
-            const elem = try self.a.create(QNode);
-            elem.* = QNode.init(val, self.*.back, null);
-
-            self.*.back.?.prev = elem;
-            self.*.back = elem;
-        }
-        self.*.len += 1;
+    pub fn deinit(self: *GameTree) void {
+        self.root.deinit(self.a);
     }
 
-    //dequeue algo to return and destory the front of the queue
-    pub fn out(self: *Q) !*Node {
-        if (self.*.len == 0) {
-            return error.QisEmpty;
-        } else if (self.*.len == 1) {
-            const old_fb = self.*.front.?;
-            const val = old_fb.*.val;
-            self.*.front = null;
-            self.*.back = null;
+    pub fn make(self: *GameTree, max_order: usize) !void {
+        var q = Queue(*Node).init(self.a);
+        defer q.deinit();
+        try q.in(self.root);
 
-            self.a.destroy(old_fb);
-            self.*.len -= 1;
-
-            return val;
-        } else {
-            const old_front = self.*.front.?;
-            const val = old_front.*.val;
-
-            self.*.front = old_front.*.prev;
-            self.*.front.?.next = null;
-
-            self.a.destroy(old_front);
-            self.*.len -= 1;
-
-            return val;
-        }
-    }
-};
-
-const Tree = struct {
-    root: *Node,
-    a: *std.mem.Allocator,
-
-    //make root of tree
-    pub fn init(a: *std.mem.Allocator) !Tree {
-        const board: Board = Board.init();
-        const root: *Node = try Node.init(board, null, a);
-        return Tree{ .root = root, .a = a };
-    }
-
-    //finds the proper length of the slice of children nodes by analyzing the top columns of the board struct
-    fn count_trues(input: *const [7]bool) usize {
-        var cnt: usize = 0;
-        for (input) |b| {
-            if (b) {
-                cnt += 1;
-            }
-        }
-
-        return cnt;
-    }
-
-    // constructs the tree in a BFS way with a level order limiter
-    pub fn make(self: *Tree, max_order: usize) !void {
-        var q: Q = Q.init(self.*.a);
-        var crnt = self.*.root;
-
-        //does initial fill of queue with first children
-        var root_children = try self.*.a.alloc(*Node, 7);
-        for (0..7) |i| {
-            var board = Board.init();
-            try board.set(@intCast(i), 1);
-            const child = try Node.init(board, crnt, self.*.a);
-            root_children[i] = child;
-            try q.in(child);
-        }
-        crnt.children = root_children;
-
-        var player: i2 = -1;
-        var lvl_cnt = q.len;
-        var order: usize = 1;
-        std.debug.print("order: {}, lvl cnt: {}\n", .{ order, lvl_cnt });
-
-        //makes rest tree for levels 1 through 6 with no win condition check
-        while ((q.len != 0) and (order < 5) and (order < max_order)) {
-            //removes node from queue
-            crnt = try q.out();
-            lvl_cnt -= 1;
-
-            //makes slice of children for all available moves
-            var children_len: usize = 7;
-
-            //heuistically limit first two oposition moves to the three midle column
-            var start_col_idx: usize = 0;
-            var end_col_idx: usize = 7;
-            if ((player == -1) and (order <= 6)) {
-                start_col_idx = 2;
-                end_col_idx = 5;
-                children_len = 3;
-            }
-
-            //add children
-            var children = try self.*.a.alloc(*Node, children_len);
-            var children_idx: usize = 0;
-            for (start_col_idx..end_col_idx) |i| {
-                var new_board = crnt.board;
-                try new_board.set(@intCast(i), player);
-                const child = try Node.init(new_board, crnt, self.*.a);
-                children[children_idx] = child;
-                try q.in(child);
-                children_idx += 1;
-            }
-            crnt.children = children;
-
-            //determines what level order were on by counting the amount of Nodes removed from queue
-            if (lvl_cnt == 0) {
+        var order_cnt = q.len; // decrementing count till next level of tree
+        var order: usize = 0; // level of the tree
+        var player: i2 = 1; // player making moves
+        std.debug.print("level || # of nodes\n______||___________\n------||-----------\n", .{});
+        while ((q.len != 0) and (order < max_order)) {
+            if (order_cnt == 0) {
+                order_cnt = q.len;
                 order += 1;
                 player *= -1;
-                lvl_cnt = q.len;
-                std.debug.print("order: {}, lvl cnt: {}\n", .{ order, lvl_cnt });
+                std.debug.print("{}     || {}\n", .{ order, order_cnt });
             }
-        }
+            var crnt = try q.out();
+            order_cnt -= 1;
 
-        //makes rest tree with win conditional generation
-        while ((q.len != 0) and (order < max_order)) {
-            //removes node from queue
-            crnt = try q.out();
-            lvl_cnt -= 1;
-
-            //different adding conditions for human and ai
-            if (player == 1) {
-                //add nodes for human player
-                const av_col = crnt.board.available_col();
-                const children_len = count_trues(&av_col);
-                var children = try self.*.a.alloc(*Node, children_len);
-                var children_idx: usize = 0;
-                for (0..7) |i| {
-                    if (av_col[i]) {
-                        var new_board = crnt.board;
+            // Control flow for different constructions at different levels
+            if (order < 5) { // No columns will be filled nor wins or almost wins in the first 5 orders
+                // control flow for who is moving
+                if (player == 1) { // human can make any move
+                    for (0..7) |i| {
+                        var new_board = crnt.baord;
                         try new_board.set(@intCast(i), player);
-                        const child = try Node.init(new_board, crnt, self.*.a);
-                        if (!new_board.is_win()) {
-                            //if node is a winner then ther is no need to generate children hence not added to queue
+                        const child = try Node.init(self.a, new_board, crnt);
+                        try crnt.children.append(child);
+                        try q.in(child);
+                    }
+                } else { // limit early AI moves to middle three columns
+                    for (2..5) |i| {
+                        var new_board = crnt.baord;
+                        try new_board.set(@intCast(i), player);
+                        const child = try Node.init(self.a, new_board, crnt);
+                        try crnt.children.append(child);
+                        try q.in(child);
+                    }
+                }
+            } else { // checks for wins, almost wins, and available columns
+                const connects = try crnt.baord.all_connects(self.a.*, 3);
+                defer connects.deinit();
+
+                // control flow for who is moving
+                if (player == 1) {
+                    const win_cols = try crnt.baord.find_all_wins( connects, player);
+                    const avail_cols = crnt.baord.available_col();
+                    for (0..7) |i| {
+                        if (avail_cols[i]) { // check if col is available
+                            var new_board = crnt.baord;
+                            try new_board.set(@intCast(i), player);
+                            const child = try Node.init(self.a, new_board, crnt);
+                            try crnt.children.append(child);
+                            if (!win_cols[i]) { // no need to add to queue if the board is a winner
+                                try q.in(child);
+                            }
+                        }
+                    }
+                } else {
+                    // check if there is a winning col
+                    const win_col = try crnt.baord.find_win(connects, player);
+                    if (win_col != null) { // check if there is a winning move
+                        var new_board = crnt.baord;
+                        try new_board.set(win_col.?, player);
+                        const child = try Node.init(self.a, new_board, crnt);
+                        try crnt.children.append(child);
+                        continue;
+                    }
+
+                    // check for moves that stop human from winning
+                    const stop_win_cols_opt = try crnt.baord.stop_wins(connects);
+                    if (stop_win_cols_opt != null) {
+                        const stop_win_cols = stop_win_cols_opt.?;
+                        for (0..7) |i|{
+                            if (stop_win_cols[i]){
+                                var new_board = crnt.baord;
+                                try new_board.set(@intCast(i), player);
+                                const child = try Node.init(self.a, new_board, crnt);
+                                try crnt.children.append(child);
+                                try q.in(child);
+                            }
+                        }
+                        continue;
+                    }
+
+                    //no winner or blockers
+                    const avail_cols = crnt.baord.available_col();
+                    for (0..7) |i| {
+                        if (avail_cols[i]) { // check if col is available
+                            var new_board = crnt.baord;
+                            try new_board.set(@intCast(i), player);
+                            const child = try Node.init(self.a, new_board, crnt);
+                            try crnt.children.append(child);
                             try q.in(child);
                         }
-                        children[children_idx] = child;
-                        children_idx += 1;
                     }
                 }
-                crnt.children = children;
-            } else {
-                const win_col = try crnt.board.find_win();
-                if (win_col != null) {
-                    var new_board = crnt.board;
-                    try new_board.set(win_col.?, player);
-                    var children = try self.*.a.alloc(*Node, 1);
-                    const child = try Node.init(new_board, crnt, self.*.a);
-                    children[0] = child;
-                    crnt.children = children;
-
-                    if (lvl_cnt == 0) {
-                        order += 1;
-                        player *= -1;
-                        lvl_cnt = q.len;
-                        std.debug.print("order: {}, lvl cnt: {}\n", .{ order, lvl_cnt });
-                    }
-
-                    continue;
-                }
-
-                const stop_win_col1, const stop_win_col2 = try crnt.board.stop_win();
-                if ((stop_win_col1 != null) or (stop_win_col2 != null)) {
-                    var children_len: usize = 1;
-                    if ((stop_win_col1 != null) and (stop_win_col2 != null)) {
-                        children_len += 1;
-                    }
-
-                    var children = try self.*.a.alloc(*Node, children_len);
-
-                    if (stop_win_col1 != null) {
-                        var new_board = crnt.board;
-                        try new_board.set(stop_win_col1.?, player);
-                        const child = try Node.init(new_board, crnt, self.*.a);
-                        try q.in(child);
-                        children[0] = child;
-                    }
-
-                    if (stop_win_col2 != null) {
-                        var new_board = crnt.board;
-                        try new_board.set(stop_win_col2.?, player);
-                        const child = try Node.init(new_board, crnt, self.*.a);
-                        try q.in(child);
-                        children[0] = child;
-                    }
-
-                    crnt.children = children;
-
-                    if (lvl_cnt == 0) {
-                        order += 1;
-                        player *= -1;
-                        lvl_cnt = q.len;
-                        std.debug.print("order: {}, lvl cnt: {}\n", .{ order, lvl_cnt });
-                    }
-
-                    continue;
-                }
-
-                const av_col = crnt.board.available_col();
-                const children_len = count_trues(&av_col);
-                var children = try self.*.a.alloc(*Node, children_len);
-                var children_idx: usize = 0;
-                for (0..7) |i| {
-                    if (av_col[i]) {
-                        var new_board = crnt.board;
-                        try new_board.set(@intCast(i), player);
-                        const child = try Node.init(new_board, crnt, self.*.a);
-                        try q.in(child);
-                        children[children_idx] = child;
-                        children_idx += 1;
-                    }
-                }
-                crnt.children = children;
-            }
-
-            //determines what level order were on by counting the amount of Nodes removed from queue
-            if (lvl_cnt == 0) {
-                order += 1;
-                player *= -1;
-                lvl_cnt = q.len;
-                std.debug.print("order: {}, lvl cnt: {}\n", .{ order, lvl_cnt });
             }
         }
-
-        std.debug.print("\nFINISH\n", .{});
-    }
-
-    pub fn deinit(self: *Tree) void {
-        self.destroy_node(self.*.root);
-    }
-
-    fn destroy_node(self: *Tree, node: *Node) void {
-        for (node.*.children) |child| {
-            self.destroy_node(child);
-        }
-        self.*.a.destroy(node);
     }
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var a = gpa.allocator();
-    var tree = try Tree.init(&a);
-    try tree.make(6);
-    tree.deinit();
-
-    // var b = Board.init();
-    // try b.set(2, -1);
-    // try b.set(2, -1);
-    // try b.set(3, 1);
-    // try b.set(3, 1);
-    // try b.set(3, 1);
-
-    // const val1 , const val2 = try b.stop_win();
-    // if (val1 != null){
-    //     std.debug.print("{}", .{val1.?});
-    // }
-    // if (val2 != null){
-    //     std.debug.print("{}", .{val2.?});
-    // }
+    var allocator = std.heap.page_allocator;
+    var tree = try GameTree.init(&allocator);
+    defer tree.deinit();
+    try tree.make(9);
 }
