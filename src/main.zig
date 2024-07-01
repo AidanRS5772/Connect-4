@@ -1,18 +1,5 @@
 const std = @import("std");
 
-// player(?i2): connect of -1 or 1
-// start of connect path(?u7): the shift amount to get to that position
-// direction(?u7): shift amount to get to the next peice on path
-// length of path: amount of shifts until shifts are no longer on the path
-// index:(?u7) of last peice in connect
-const Connect_Data = struct {
-    player: i2,
-    start: u7,
-    dir: u7,
-    len: u7,
-    idx: u7,
-};
-
 const Board = struct {
     // Stores Data of the board as a u84 where every 2 bits repersents an i2
     // b00 -> 0 ->  Empty
@@ -20,326 +7,280 @@ const Board = struct {
     // b11 -> -1 -> Advisary Peice
     // Position of i2 is mapped as 6*col + row for every 2 bits
 
-    data: u84,
+    data: std.PackedIntArray(i2, 42),
 
     pub fn init() Board {
-        return Board{ .data = 0 };
+        return Board{ .data = std.PackedIntArray(i2, 42).initAllTo(0) };
     }
 
     // non mutable setter
     // sets the data of an i2 in the proper col pushing it to the first zero
     // throws error if attempting to push to position that is already set or full column
-    pub fn set(self: *Board, col: u7, player: i2) !void {
+    pub fn set(self: *Board, col: usize, player: i2) !void {
         if (col >= 7) return error.OutOfBounds;
 
-        const col_bits = (self.data >> (12 * col)) & 0xFFF;
-        const bit2: u84 = 0b11;
-        var row: u7 = 0;
-        while ((col_bits & (bit2 << (2 * row))) != 0) : (row += 1) {
-            if (row > 5) return error.ColumnFull;
+        const start_idx: usize = col * 6;
+        var idx = start_idx;
+        while (self.data.get(idx) != 0) : (idx += 1) {
+            if ((idx - start_idx) >= 6) return error.ColumnFull;
         }
 
-        const uplayer: u2 = @bitCast(player);
-        const setter: u84 = @intCast(uplayer);
-        self.*.data |= setter << 12 * col + 2 * row;
+        self.data.set(idx, player);
     }
 
     // gets data at some col and row
     // errors if col or row are out of bounds
     pub fn get(self: Board, col: u7, row: u7) !i2 {
         if ((col >= 7) or (row >= 6)) return error.OutOfBounds;
-        const bit2: u2 = @intCast((self.data >> (col * 12 + row * 2)) & 0b11);
-        const val: i2 = @bitCast(bit2);
-        return val;
+        return self.data.get(6 * col + row);
     }
+
+    // player(?i2): connect of -1 or 1
+    // start of connect path(?u7): the shift amount to get to that position
+    // direction(?u7): shift amount to get to the next peice on path
+    // length of path: amount of shifts until shifts are no longer on the path
+    // index:(?u7) of last peice in connect
+    const Connect_Data = struct {
+        player: i2,
+        start: usize,
+        dir: usize,
+        len: usize,
+        idx: usize,
+    };
 
     // finds all connects of a specific size and returns all the info of all the connects
     pub fn all_connects(self: Board, a: std.mem.Allocator, sz: usize) !std.ArrayList(Connect_Data) {
         var connects = std.ArrayList(Connect_Data).init(a);
-        //check columns
-        var col_idx: u7 = 0;
-        while (col_idx < 7) {
-            var col_data: u84 = self.data >> col_idx * 12;
-            var cnt: u8 = 0;
-            var crnt_2bit: u84 = 0;
-            for (0..6) |i| {
-                const bit2 = col_data & 0b11;
+
+        // check columns
+        for (0..7) |i| {
+            var cnt: usize = 0;
+            var crnt_bit2: i2 = 0;
+            for (0..6) |j| {
+                const bit2 = self.data.get(6 * i + j);
                 if (bit2 == 0) {
                     break;
                 }
 
-                if (crnt_2bit != bit2) {
-                    crnt_2bit = bit2;
-                    cnt = 1;
-                } else {
+                if (crnt_bit2 == bit2) {
                     cnt += 1;
+                } else {
+                    crnt_bit2 = bit2;
+                    cnt = 1;
                 }
 
                 if (cnt >= sz) {
-                    const ubit2: u2 = @intCast(bit2);
-                    const player: i2 = @bitCast(ubit2);
-                    const idx: u7 = @intCast(i);
-                    const con_data = Connect_Data{ 
-                        .player = player, .start = col_idx * 12, 
-                        .dir = 2, 
-                        .len = 6, 
-                        .idx = idx };
+                    const con_data = Connect_Data{
+                        .player = crnt_bit2,
+                        .start = 6 * i,
+                        .dir = 1,
+                        .len = 6,
+                        .idx = j,
+                    };
                     try connects.append(con_data);
-                    break;
                 }
-
-                col_data >>= 2;
             }
-            col_idx += 1;
         }
 
-        //check rows
-        var row_idx: u7 = 0;
-        while (row_idx < 6) {
-            var row_data: u84 = self.data >> row_idx * 2;
-            var cnt: u8 = 0;
-            var crnt_2bit: u84 = 0;
-            for (0..7) |i| {
-                const bit2 = row_data & 0b11;
+        // check rows
+        for (0..6) |i| {
+            var cnt: usize = 0;
+            var crnt_bit2: i2 = 0;
+            for (0..7) |j| {
+                const bit2 = self.data.get(i + 6 * j);
                 if (bit2 == 0) {
                     cnt = 0;
-                    crnt_2bit = 0;
-                    row_data >>= 12;
+                    crnt_bit2 = 0;
                     continue;
                 }
 
-                if (crnt_2bit != bit2) {
-                    crnt_2bit = bit2;
-                    cnt = 1;
-                } else {
+                if (crnt_bit2 == bit2) {
                     cnt += 1;
+                } else {
+                    crnt_bit2 = bit2;
+                    cnt = 1;
                 }
 
                 if (cnt >= sz) {
-                    const ubit2: u2 = @intCast(bit2);
-                    const player: i2 = @bitCast(ubit2);
-                    const idx: u7 = @intCast(i);
-                    const con_data = Connect_Data{ 
-                        .player = player, 
-                        .start = row_idx * 2, 
-                        .dir = 12, 
-                        .len = 7, 
-                        .idx = idx };
+                    const con_data = Connect_Data{
+                        .player = crnt_bit2,
+                        .start = i,
+                        .dir = 6,
+                        .len = 7,
+                        .idx = j,
+                    };
                     try connects.append(con_data);
-                    break;
                 }
-
-                row_data >>= 12;
             }
-
-            row_idx += 1;
         }
 
-        // check starting low diagonals
-        // part 1
-        var l_diag_idx_1: u7 = 0;
-        while (l_diag_idx_1 < 3) {
-            var diag_bits = self.data >> 2 * l_diag_idx_1;
-            var cnt: u8 = 0;
-            var crnt_2bit: u84 = 0;
-            for (0..(6 - l_diag_idx_1)) |i| {
-                const bit2 = diag_bits & 0b11;
-
+        //check low to high diagonals part 1
+        for (0..3) |i| {
+            var cnt: usize = 0;
+            var crnt_bit2: i2 = 0;
+            for (0..(6 - i)) |j| {
+                const bit2 = self.data.get(i + 7 * j);
                 if (bit2 == 0) {
                     cnt = 0;
-                    crnt_2bit = 0;
-                    diag_bits >>= 14;
+                    crnt_bit2 = 0;
                     continue;
                 }
 
-                if (crnt_2bit != bit2) {
-                    crnt_2bit = bit2;
-                    cnt = 1;
-                } else {
+                if (crnt_bit2 == bit2) {
                     cnt += 1;
+                } else {
+                    crnt_bit2 = bit2;
+                    cnt = 1;
                 }
 
                 if (cnt >= sz) {
-                    const ubit2: u2 = @intCast(bit2);
-                    const player: i2 = @bitCast(ubit2);
-                    const idx: u7 = @intCast(i);
-                    const con_data =  Connect_Data{ 
-                        .player = player, 
-                        .start = 2 * l_diag_idx_1, 
-                        .dir = 14, 
-                        .len = 6 - l_diag_idx_1, 
-                        .idx = idx };
+                    const con_data = Connect_Data{
+                        .player = crnt_bit2,
+                        .start = i,
+                        .dir = 7,
+                        .len = 6 - i,
+                        .idx = j,
+                    };
                     try connects.append(con_data);
-                    break;
                 }
-
-                diag_bits >>= 14;
             }
-
-            l_diag_idx_1 += 1;
         }
 
-        // check starting low diagonals
-        // part 2
-        var l_diag_idx_2: u7 = 1;
-        while (l_diag_idx_2 < 4) {
-            var diag_bits = self.data >> 12 * l_diag_idx_2;
-            var cnt: u8 = 0;
-            var crnt_2bit: u84 = 0;
-            for (0..(7 - l_diag_idx_2)) |i| {
-                const bit2 = diag_bits & 0b11;
-
+        //check low to high diagonals part 2
+        for (1..4) |i| {
+            var cnt: usize = 0;
+            var crnt_bit2: i2 = 0;
+            for (0..(7 - i)) |j| {
+                const bit2 = self.data.get(6 * i + 7 * j);
                 if (bit2 == 0) {
                     cnt = 0;
-                    crnt_2bit = 0;
-                    diag_bits >>= 14;
+                    crnt_bit2 = 0;
                     continue;
                 }
 
-                if (crnt_2bit != bit2) {
-                    crnt_2bit = bit2;
-                    cnt = 1;
-                } else {
+                if (crnt_bit2 == bit2) {
                     cnt += 1;
+                } else {
+                    crnt_bit2 = bit2;
+                    cnt = 1;
                 }
 
                 if (cnt >= sz) {
-                    const ubit2: u2 = @intCast(bit2);
-                    const player: i2 = @bitCast(ubit2);
-                    const idx: u7 = @intCast(i);
-                    const con_data = Connect_Data{ 
-                        .player = player, 
-                        .start = 12 * l_diag_idx_2, 
-                        .dir = 14, 
-                        .len = 7 - l_diag_idx_2, 
-                        .idx = idx };
+                    const con_data = Connect_Data{
+                        .player = crnt_bit2,
+                        .start = 6 * i,
+                        .dir = 7,
+                        .len = 7 - i,
+                        .idx = j,
+                    };
                     try connects.append(con_data);
-                    break;
                 }
-
-                diag_bits >>= 14;
             }
-
-            l_diag_idx_2 += 1;
         }
 
-        // check starting high diagonals
-        // part 1
-        var h_diag_idx_1: u7 = 5;
-        while (2 < h_diag_idx_1) {
-            var diag_bits = self.data >> 2 * h_diag_idx_1;
-            var cnt: u8 = 0;
-            var crnt_2bit: u84 = 0;
-            for (0..(h_diag_idx_1 + 1)) |i| {
-                const bit2 = diag_bits & 0b11;
-
+        //check high to low diagonals part 1
+        for (3..6) |i| {
+            var cnt: usize = 0;
+            var crnt_bit2: i2 = 0;
+            for (0..(i + 1)) |j| {
+                const bit2 = self.data.get(i + 5 * j);
                 if (bit2 == 0) {
                     cnt = 0;
-                    crnt_2bit = 0;
-                    diag_bits >>= 10;
+                    crnt_bit2 = 0;
                     continue;
                 }
 
-                if (crnt_2bit != bit2) {
-                    crnt_2bit = bit2;
-                    cnt = 1;
-                } else {
+                if (crnt_bit2 == bit2) {
                     cnt += 1;
+                } else {
+                    crnt_bit2 = bit2;
+                    cnt = 1;
                 }
 
                 if (cnt >= sz) {
-                    const ubit2: u2 = @intCast(bit2);
-                    const player: i2 = @bitCast(ubit2);
-                    const idx: u7 = @intCast(i);
-                    const con_data = Connect_Data{ 
-                        .player = player, 
-                        .start = 2 * h_diag_idx_1, 
-                        .dir = 10, 
-                        .len = h_diag_idx_1 + 1, 
-                        .idx = idx };
+                    const con_data = Connect_Data{
+                        .player = crnt_bit2,
+                        .start = i,
+                        .dir = 5,
+                        .len = i + 1,
+                        .idx = j,
+                    };
                     try connects.append(con_data);
-                    break;
                 }
-
-                diag_bits >>= 10;
             }
-
-            h_diag_idx_1 -= 1;
         }
 
-        // check starting high diagonals
-        // part 2
-        var h_diag_idx_2: u7 = 1;
-        while (h_diag_idx_2 < 4) {
-            var diag_bits = self.data >> 12 * h_diag_idx_1 + 10;
-            var cnt: u8 = 0;
-            var crnt_2bit: u84 = 0;
-            for (0..(7 - h_diag_idx_2)) |i| {
-                const bit2 = diag_bits & 0b11;
-
+        //check high to low diagonals part 2
+        for (1..4) |i| {
+            var cnt: usize = 0;
+            var crnt_bit2: i2 = 0;
+            for (0..(7 - i)) |j| {
+                const bit2 = self.data.get(5 + 6 * i + 5 * j);
                 if (bit2 == 0) {
                     cnt = 0;
-                    crnt_2bit = 0;
-                    diag_bits >>= 10;
+                    crnt_bit2 = 0;
                     continue;
                 }
 
-                if (crnt_2bit != bit2) {
-                    crnt_2bit = bit2;
-                    cnt = 1;
-                } else {
+                if (crnt_bit2 == bit2) {
                     cnt += 1;
+                } else {
+                    crnt_bit2 = bit2;
+                    cnt = 1;
                 }
 
                 if (cnt >= sz) {
-                    const ubit2: u2 = @intCast(bit2);
-                    const player: i2 = @bitCast(ubit2);
-                    const idx: u7 = @intCast(i);
-                    const con_data = Connect_Data{ 
-                        .player = player, 
-                        .start = 12 * h_diag_idx_1 + 10,
-                        .dir =  10, 
-                        .len = 7 - h_diag_idx_2,
-                        .idx = idx };
+                    const con_data = Connect_Data{
+                        .player = crnt_bit2,
+                        .start = 5 + 6 * i,
+                        .dir = 5,
+                        .len = 7 - i,
+                        .idx = j,
+                    };
                     try connects.append(con_data);
-                    break;
                 }
-
-                diag_bits >>= 10;
             }
-
-            h_diag_idx_2 += 1;
         }
 
         return connects;
     }
 
     // finds all columns that stop win in next move for human
-    pub fn stop_wins(self: Board, connects: std.ArrayList(Connect_Data)) !?[7]bool {
+    pub fn stop_wins(self: Board, connects: std.ArrayList(Connect_Data)) ?[7]bool {
         var cols = std.mem.zeroes([7]bool);
         var state = false;
-        for (connects.items) |cd|{
+        for (connects.items) |cd| {
             if (cd.player == -1) break;
 
             if (cd.idx >= 3) {
-                const col = (cd.start + cd.dir * (cd.idx - 3)) / 12;
-                const row = ((cd.start + cd.dir * (cd.idx - 3)) % 12) / 2;
-                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
-                const val2: i2 = try self.get(col, row);
-                if ((val1 != 0) and (val2 == 0)) {
-                    state = true;
-                    cols[col] = true;
+                const col:usize = (cd.start + cd.dir * (cd.idx - 3))/6;
+                const row:usize = (cd.start + cd.dir * (cd.idx - 3))%6;
+                if (self.data.get(6*col+row) == 0){
+                    if (row != 0){
+                        if (self.data.get(6*col+row-1) != 0){
+                            state = true;
+                            cols[col] = true;
+                        }
+                    }else{
+                        state = true;
+                        cols[col] = true;
+                    }
                 }
             }
 
             if ((cd.idx + 1) < cd.len) {
-                const col = (cd.start + cd.dir * (cd.idx + 1)) / 12;
-                const row = ((cd.start + cd.dir * (cd.idx + 1)) % 12) / 2;
-                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
-                const val2: i2 = try self.get(col, row);
-                if ((val1 != 0) and (val2 == 0)) {
-                    state = true;
-                    cols[col] = true;
+                const col:usize = (cd.start + cd.dir * (cd.idx + 1))/6;
+                const row:usize = (cd.start + cd.dir * (cd.idx + 1))%6;
+                if (self.data.get(6*col+row) == 0){
+                    if (row != 0){
+                        if (self.data.get(6*col+row-1) != 0){
+                            state = true;
+                            cols[col] = true;
+                        }
+                    }else{
+                        state = true;
+                        cols[col] = true;
+                    }
                 }
             }
         }
@@ -348,27 +289,35 @@ const Board = struct {
     }
 
     // finds the first column that making a move at would result in a win and null if there is no such column
-    pub fn find_win(self: Board, connects: std.ArrayList(Connect_Data), player: i2) !?u7 {
-        for (connects.items) |cd|{
-            if (cd.player != player) continue;
+    pub fn find_win(self: Board, connects: std.ArrayList(Connect_Data), player: i2) ?usize {
+        for (connects.items) |cd| {
+            if (cd.player == player) break;
 
             if (cd.idx >= 3) {
-                const col = (cd.start + cd.dir * (cd.idx - 3)) / 12;
-                const row = ((cd.start + cd.dir * (cd.idx - 3)) % 12) / 2;
-                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
-                const val2: i2 = try self.get(col, row);
-                if ((val1 != 0) and (val2 == 0)) {
-                    return col;
+                const col:usize = (cd.start + cd.dir * (cd.idx - 3))/6;
+                const row:usize = (cd.start + cd.dir * (cd.idx - 3))%6;
+                if (self.data.get(6*col+row) == 0){
+                    if (row != 0){
+                        if (self.data.get(6*col+row-1) != 0){
+                            return col;
+                        }
+                    }else{
+                        return col;
+                    }
                 }
             }
 
             if ((cd.idx + 1) < cd.len) {
-                const col = (cd.start + cd.dir * (cd.idx + 1)) / 12;
-                const row = ((cd.start + cd.dir * (cd.idx + 1)) % 12) / 2;
-                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
-                const val2: i2 = try self.get(col, row);
-                if ((val1 != 0) and (val2 == 0)) {
-                    return col;
+                const col:usize = (cd.start + cd.dir * (cd.idx + 1))/6;
+                const row:usize = (cd.start + cd.dir * (cd.idx + 1))%6;
+                if (self.data.get(6*col+row) == 0){
+                    if (row != 0){
+                        if (self.data.get(6*col+row-1) != 0){
+                            return col;
+                        }
+                    }else{
+                        return col;
+                    }
                 }
             }
         }
@@ -377,29 +326,36 @@ const Board = struct {
     }
 
     // finds all columns that result in a win
-    pub fn find_all_wins(self: Board, connects: std.ArrayList(Connect_Data), player: i2) ![7]bool {
+    pub fn find_all_wins(self: Board, connects: std.ArrayList(Connect_Data), player: i2) [7]bool {
         var cols = std.mem.zeroes([7]bool);
-
-        for (connects.items) |cd|{
-            if (cd.player != player) continue;
+        for (connects.items) |cd| {
+            if (cd.player == player) break;
 
             if (cd.idx >= 3) {
-                const col = (cd.start + cd.dir * (cd.idx - 3)) / 12;
-                const row = ((cd.start + cd.dir * (cd.idx - 3)) % 12) / 2;
-                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
-                const val2: i2 = try self.get(col, row);
-                if ((val1 != 0) and (val2 == 0)) {
-                    cols[col] = true;
+                const col:usize = (cd.start + cd.dir * (cd.idx - 3))/6;
+                const row:usize = (cd.start + cd.dir * (cd.idx - 3))%6;
+                if (self.data.get(6*col+row) == 0){
+                    if (row != 0){
+                        if (self.data.get(6*col+row-1) != 0){
+                            cols[col] = true;
+                        }
+                    }else{
+                        cols[col] = true;
+                    }
                 }
             }
 
             if ((cd.idx + 1) < cd.len) {
-                const col = (cd.start + cd.dir * (cd.idx + 1)) / 12;
-                const row = ((cd.start + cd.dir * (cd.idx + 1)) % 12) / 2;
-                const val1: i2 = if (row == 0) 1 else try self.get(col, row - 1);
-                const val2: i2 = try self.get(col, row);
-                if ((val1 != 0) and (val2 == 0)) {
-                    cols[col] = true;
+                const col:usize = (cd.start + cd.dir * (cd.idx + 1))/6;
+                const row:usize = (cd.start + cd.dir * (cd.idx + 1))%6;
+                if (self.data.get(6*col+row) == 0){
+                    if (row != 0){
+                        if (self.data.get(6*col+row-1) != 0){
+                            cols[col] = true;
+                        }
+                    }else{
+                        cols[col] = true;
+                    }
                 }
             }
         }
@@ -410,53 +366,31 @@ const Board = struct {
     //returns all available columns to make a move
     pub fn available_col(self: Board) [7]bool {
         var out: [7]bool = undefined;
-        var bits: u84 = self.data >> 10;
         for (0..7) |i| {
-            const bit2: u84 = bits & 0b11;
-            if (bit2 == 0) {
+            if (self.data.get(5+6*i) == 0) {
                 out[i] = true;
             } else {
                 out[i] = false;
             }
-            bits >>= 12;
         }
 
         return out;
     }
 
-    // displays bits as list of i2
-    pub fn display_bits(self: Board) void {
-        var bits: u84 = self.data;
-
-        for (0..42) |_| {
-            const bit2: u2 = @intCast(bits & 0b11);
-            const val: i2 = @bitCast(bit2);
-            std.debug.print("{} ", .{val});
-            bits >>= 2;
-        }
-        std.debug.print("\n", .{});
-    }
-
     // visually displays board
     pub fn display_board(self: Board) void {
-        std.debug.print("\n\n", .{});
-        var i: u7 = 1;
-        while (i < 7) {
-            var row: u84 = self.data >> (6 - i) * 2;
-            for (0..7) |_| {
-                const bit2: u2 = @intCast(row & 0b11);
-                const val: i2 = @bitCast(bit2);
-                if ((val == 0) or (val == 1)) {
-                    std.debug.print("  {}", .{val});
-                } else {
-                    std.debug.print(" {}", .{val});
-                }
-                row >>= 12;
-            }
-            std.debug.print("\n", .{});
-            i += 1;
-        }
         std.debug.print("\n", .{});
+        var i = 5;
+        while (i > 0) : (i -= 1){
+            for (0..7) |j|{
+                const val = self.data.get(i+6*j);
+                if (val == -1){
+                    std.debug.print(" {}", .{val});
+                }else{
+                    std.debug.print("  {}", .{val});
+                }
+            }
+        }
     }
 };
 
@@ -513,6 +447,23 @@ pub fn Queue(comptime Child: type) type {
             this.len -= 1;
             return start.data;
         }
+
+        pub fn transfer(dest: *This, src: *This) !void {
+            // Ensure dest is empty
+            if (dest.len != 0) {
+                return error.DesinationIsNotEmpty;
+            }
+
+            // Transfer pointers
+            dest.start = src.start;
+            dest.end = src.end;
+            dest.len = src.len;
+
+            // Nullify src pointers and reset length
+            src.start = null;
+            src.end = null;
+            src.len = 0;
+        }
     };
 }
 
@@ -556,103 +507,104 @@ const GameTree = struct {
     }
 
     pub fn make(self: *GameTree, max_order: usize) !void {
-        var q = Queue(*Node).init(self.a);
-        defer q.deinit();
-        try q.in(self.root);
+        var out_q = Queue(*Node).init(self.a);
+        defer out_q.deinit();
+        try out_q.in(self.root);
 
-        var order_cnt = q.len; // decrementing count till next level of tree
         var order: usize = 0; // level of the tree
         var player: i2 = 1; // player making moves
         std.debug.print("level || # of nodes\n______||___________\n------||-----------\n", .{});
-        while ((q.len != 0) and (order < max_order)) {
-            if (order_cnt == 0) {
-                order_cnt = q.len;
-                order += 1;
-                player *= -1;
-                std.debug.print("{}     || {}\n", .{ order, order_cnt });
-            }
-            var crnt = try q.out();
-            order_cnt -= 1;
+        while (order < max_order) {
+            var in_q = Queue(*Node).init(self.a);
+        
+            while (out_q.len > 0){
+                var crnt = try out_q.out();
 
-            // Control flow for different constructions at different levels
-            if (order < 5) { // No columns will be filled nor wins or almost wins in the first 5 orders
-                // control flow for who is moving
-                if (player == 1) { // human can make any move
-                    for (0..7) |i| {
-                        var new_board = crnt.baord;
-                        try new_board.set(@intCast(i), player);
-                        const child = try Node.init(self.a, new_board, crnt);
-                        try crnt.children.append(child);
-                        try q.in(child);
-                    }
-                } else { // limit early AI moves to middle three columns
-                    for (2..5) |i| {
-                        var new_board = crnt.baord;
-                        try new_board.set(@intCast(i), player);
-                        const child = try Node.init(self.a, new_board, crnt);
-                        try crnt.children.append(child);
-                        try q.in(child);
-                    }
-                }
-            } else { // checks for wins, almost wins, and available columns
-                const connects = try crnt.baord.all_connects(self.a.*, 3);
-                defer connects.deinit();
-
-                // control flow for who is moving
-                if (player == 1) {
-                    const win_cols = try crnt.baord.find_all_wins( connects, player);
-                    const avail_cols = crnt.baord.available_col();
-                    for (0..7) |i| {
-                        if (avail_cols[i]) { // check if col is available
+                // Control flow for different constructions at different levels
+                if (order < 5) { // No columns will be filled nor wins or almost wins in the first 5 orders
+                    // control flow for who is moving
+                    if (player == 1) { // human can make any move
+                        for (0..7) |i| {
                             var new_board = crnt.baord;
                             try new_board.set(@intCast(i), player);
                             const child = try Node.init(self.a, new_board, crnt);
                             try crnt.children.append(child);
-                            if (!win_cols[i]) { // no need to add to queue if the board is a winner
-                                try q.in(child);
-                            }
+                            try in_q.in(child);
+                        }
+                    } else { // limit early AI moves to middle three columns
+                        for (2..5) |i| {
+                            var new_board = crnt.baord;
+                            try new_board.set(@intCast(i), player);
+                            const child = try Node.init(self.a, new_board, crnt);
+                            try crnt.children.append(child);
+                            try in_q.in(child);
                         }
                     }
-                } else {
-                    // check if there is a winning col
-                    const win_col = try crnt.baord.find_win(connects, player);
-                    if (win_col != null) { // check if there is a winning move
-                        var new_board = crnt.baord;
-                        try new_board.set(win_col.?, player);
-                        const child = try Node.init(self.a, new_board, crnt);
-                        try crnt.children.append(child);
-                        continue;
-                    }
+                } else { // checks for wins, almost wins, and available columns
+                    const connects = try crnt.baord.all_connects(self.a.*, 3);
+                    defer connects.deinit();
 
-                    // check for moves that stop human from winning
-                    const stop_win_cols_opt = try crnt.baord.stop_wins(connects);
-                    if (stop_win_cols_opt != null) {
-                        const stop_win_cols = stop_win_cols_opt.?;
-                        for (0..7) |i|{
-                            if (stop_win_cols[i]){
+                    // control flow for who is moving
+                    if (player == 1) {
+                        const win_cols = crnt.baord.find_all_wins(connects, player);
+                        const avail_cols = crnt.baord.available_col();
+                        for (0..7) |i| {
+                            if (avail_cols[i]) { // check if col is available
                                 var new_board = crnt.baord;
                                 try new_board.set(@intCast(i), player);
                                 const child = try Node.init(self.a, new_board, crnt);
                                 try crnt.children.append(child);
-                                try q.in(child);
+                                if (!win_cols[i]) { // no need to add to queue if the board is a winner
+                                    try in_q.in(child);
+                                }
                             }
                         }
-                        continue;
-                    }
-
-                    //no winner or blockers
-                    const avail_cols = crnt.baord.available_col();
-                    for (0..7) |i| {
-                        if (avail_cols[i]) { // check if col is available
+                    } else {
+                        // check if there is a winning col
+                        const win_col = crnt.baord.find_win(connects, player);
+                        if (win_col != null) { // check if there is a winning move
                             var new_board = crnt.baord;
-                            try new_board.set(@intCast(i), player);
+                            try new_board.set(win_col.?, player);
                             const child = try Node.init(self.a, new_board, crnt);
                             try crnt.children.append(child);
-                            try q.in(child);
+                            continue;
+                        }
+
+                        // check for moves that stop human from winning
+                        const stop_win_cols_opt = crnt.baord.stop_wins(connects);
+                        if (stop_win_cols_opt != null) {
+                            const stop_win_cols = stop_win_cols_opt.?;
+                            for (0..7) |i| {
+                                if (stop_win_cols[i]) {
+                                    var new_board = crnt.baord;
+                                    try new_board.set(@intCast(i), player);
+                                    const child = try Node.init(self.a, new_board, crnt);
+                                    try crnt.children.append(child);
+                                    try in_q.in(child);
+                                }
+                            }
+                            continue;
+                        }
+
+                        //no winner or blockers
+                        const avail_cols = crnt.baord.available_col();
+                        for (0..7) |i| {
+                            if (avail_cols[i]) { // check if col is available
+                                var new_board = crnt.baord;
+                                try new_board.set(@intCast(i), player);
+                                const child = try Node.init(self.a, new_board, crnt);
+                                try crnt.children.append(child);
+                                try in_q.in(child);
+                            }
                         }
                     }
                 }
             }
+            
+            try out_q.transfer(&in_q);
+            order += 1;
+            player *= -1;
+            std.debug.print("{}     || {}\n", .{ order,  out_q.len});
         }
     }
 };
@@ -661,5 +613,5 @@ pub fn main() !void {
     var allocator = std.heap.page_allocator;
     var tree = try GameTree.init(&allocator);
     defer tree.deinit();
-    try tree.make(9);
+    try tree.make(7);
 }
